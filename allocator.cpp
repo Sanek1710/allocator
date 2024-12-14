@@ -1,9 +1,9 @@
 #include "allocator.hpp"
 #include <array>
+#include <iomanip>
 #include <iostream>
 #include <ostream>
 #include <stdexcept>
-
 
 MemoryAllocator::MemoryAllocator(size_t size)
     : total_size(next_power_2(size)), allocated_size(0), next_address(1000) {
@@ -113,8 +113,6 @@ MemoryAllocator::calculate_external_fragmentation(size_t max_address) const {
   if (blocks.empty() || allocated_size == 0)
     return 0.0;
 
-  double weighted_sum = 0.0;
-  size_t total_weight = 0;
   size_t total_free = 0;
 
   // Calculate total free space
@@ -132,7 +130,7 @@ MemoryAllocator::calculate_external_fragmentation(size_t max_address) const {
   // Initialize array for block counts
   std::array<size_t, BLOCK_SIZES_COUNT> actual_blocks{};
 
-  // Count blocks of each size
+  // First pass: count blocks of each size
   for (const auto &pair : blocks) {
     if (max_address && pair.first >= max_address)
       break;
@@ -143,7 +141,19 @@ MemoryAllocator::calculate_external_fragmentation(size_t max_address) const {
     }
   }
 
-  // Calculate fragmentation for each block size
+  // Second pass: calculate actual blocks for each size
+  for (size_t i = 0; i < BLOCK_SIZES_COUNT - 1; ++i) {
+    for (size_t j = i + 1; j < BLOCK_SIZES_COUNT; ++j) {
+      if (actual_blocks[j] > 0) {
+        actual_blocks[i] += actual_blocks[j] * (1U << (j - i));
+      }
+    }
+  }
+
+  // Third pass: calculate weighted sum and total weight
+  double weighted_sum = 0.0;
+  size_t total_weight = 0;
+
   for (size_t i = 0; i < BLOCK_SIZES_COUNT; ++i) {
     size_t block_size = MIN_BLOCK_SIZE << i;
     if (block_size > total_free)
@@ -153,18 +163,29 @@ MemoryAllocator::calculate_external_fragmentation(size_t max_address) const {
     if (potential_blocks == 0)
       continue;
 
-    // Calculate actual blocks that could be allocated
-    size_t actual = 0;
-    for (size_t j = i; j < BLOCK_SIZES_COUNT; ++j) {
-      if (actual_blocks[j] > 0) {
-        actual += actual_blocks[j] * (MIN_BLOCK_SIZE << j) / block_size;
-      }
-    }
-
-    size_t weight = 1;
-    weighted_sum += weight * (static_cast<double>(actual) / potential_blocks);
-    total_weight += weight;
+    weighted_sum += static_cast<double>(actual_blocks[i]) / potential_blocks;
+    total_weight += 1;
   }
+
+#ifdef PRINT_EXT_FRAG
+  std::cout << "\nBlock size | Actual blocks | Potential blocks | Rate\n";
+  std::cout << "-----------------------------------------------\n";
+  for (size_t i = 0; i < BLOCK_SIZES_COUNT; ++i) {
+    size_t block_size = MIN_BLOCK_SIZE << i;
+    if (block_size > total_free)
+      break;
+
+    size_t potential_blocks = total_free / block_size;
+    if (potential_blocks == 0)
+      continue;
+
+    double rate = static_cast<double>(actual_blocks[i]) / potential_blocks;
+    std::cout << std::setw(9) << block_size << " | " << std::setw(13)
+              << actual_blocks[i] << " | " << std::setw(15) << potential_blocks
+              << " | " << std::fixed << std::setprecision(3) << rate << "\n";
+  }
+  std::cout << "\n";
+#endif
 
   return total_weight > 0 ? 1.0 - (weighted_sum / total_weight) : 0.0;
 }
