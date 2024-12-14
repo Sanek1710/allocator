@@ -1,69 +1,200 @@
 #include "allocator.hpp"
+#include <iostream>
+#include <ostream>
 #include <stdexcept>
 
-MemoryAllocator::MemoryAllocator(size_t size) 
-    : total_size(size), allocated_size(0), next_address(1000) {  // Start at 1000 for easy reading
-    // Initialize with one free block spanning the entire space
-    blocks[next_address] = {size, true};
+MemoryAllocator::MemoryAllocator(size_t size)
+    : total_size(next_power_2(size)), allocated_size(0), next_address(1000) {
+  blocks[next_address] = {total_size, 0, true};
+}
+
+size_t MemoryAllocator::find_last_allocated_address() const {
+  size_t last_addr = next_address; // Start of memory
+  for (const auto &pair : blocks) {
+    if (!pair.second.is_free) {
+      last_addr = pair.first + pair.second.size;
+    }
+  }
+  return last_addr;
 }
 
 size_t MemoryAllocator::alloc(size_t size) {
-    if (size == 0) {
-        throw std::invalid_argument("Cannot allocate 0 bytes");
-    }
+  if (!size)
+    return 0;
 
-    // Align size to 8 bytes (simulate memory alignment)
-    size = (size + 7) & ~7;
+  size_t block_size = calculate_block_size(size);
 
-    // Find a free block that's big enough
-    for (auto& pair : blocks) {
-        auto addr = pair.first;
-        auto& block = pair.second;
-        
-        if (block.is_free && block.size >= size) {
-            // If block is significantly larger, split it
-            if (block.size > size + 16) {  // Only split if difference is worth it
-                size_t new_addr = addr + size;
-                blocks[new_addr] = {block.size - size, true};
-                block.size = size;
-            }
-            
-            block.is_free = false;
-            allocated_size += block.size;
-            return addr;
-        }
+  // Find and split in one pass
+  for (auto &pair : blocks) {
+    auto addr = pair.first;
+    auto &block = pair.second;
+
+    if (block.is_free && block.size >= block_size) {
+      // Split only if necessary
+      while (block.size > block_size && block.size > MIN_BLOCK_SIZE) {
+        size_t new_size = block.size >> 1; // Divide by 2
+        blocks[addr + new_size] = {new_size, 0, true};
+        block.size = new_size;
+      }
+
+      block.is_free = false;
+      block.allocated = size;
+      allocated_size += size;
+      return addr;
     }
-    
-    throw std::bad_alloc();
+  }
+
+  throw std::bad_alloc();
 }
 
 void MemoryAllocator::dealloc(size_t address) {
-    auto it = blocks.find(address);
-    if (it == blocks.end()) {
-        throw std::invalid_argument("Invalid address");
+  auto it = blocks.find(address);
+  if (it == blocks.end() || it->second.is_free) {
+    throw std::invalid_argument("Invalid deallocation");
+  }
+
+  allocated_size -= it->second.allocated;
+  it->second.is_free = true;
+  it->second.allocated = 0;
+
+  // Merge buddies if possible
+  bool merged;
+  do {
+    merged = false;
+    size_t size = it->second.size;
+    size_t addr = it->first;
+    size_t buddy_addr;
+
+    // Calculate buddy address based on address alignment
+    if (addr & size) {
+      buddy_addr = addr - size; // We're the right buddy
+    } else {
+      buddy_addr = addr + size; // We're the left buddy
     }
 
-    if (it->second.is_free) {
-        throw std::runtime_error("Double free detected");
+    auto buddy = blocks.find(buddy_addr);
+    if (buddy != blocks.end() && buddy->second.is_free &&
+        buddy->second.size == size) {
+
+      if (addr > buddy_addr) {
+        // Merge into left buddy
+        buddy->second.size <<= 1; // Multiply by 2
+        blocks.erase(it);
+        it = buddy;
+      } else {
+        // Merge into current block
+        it->second.size <<= 1;
+        blocks.erase(buddy);
+      }
+      merged = true;
+    }
+  } while (merged && it->second.size < total_size);
+}
+
+double MemoryAllocator::get_internal_fragmentation() const {
+  if (!allocated_size)
+    return 0.0;
+
+  size_t total_wasted = 0;
+  for (const auto &pair : blocks) {
+    const auto &block = pair.second;
+    if (!block.is_free) {
+      total_wasted += block.size - block.allocated;
+    }
+  }
+
+  return static_cast<double>(total_wasted) / allocated_size;
+}
+
+double MemoryAllocator::get_external_fragmentation() const {
+  if (blocks.empty() || allocated_size == 0)
+    return 0.0;
+
+  double weighted_sum = 0.0;
+  size_t total_weight = 0;
+  size_t total_free = 0;
+
+  // First calculate total free space
+  for (const auto &pair : blocks) {
+    if (pair.second.is_free) {
+      total_free += pair.second.size;
+    }
+  }
+
+  if (total_free == 0)
+    return 0.0;
+
+  // For each possible block size
+  for (size_t block_size = MIN_BLOCK_SIZE; block_size <= total_free;
+       block_size <<= 1) {
+    // Calculate potential blocks (if memory was contiguous)
+    size_t potential_blocks = total_free / block_size;
+    if (potential_blocks == 0)
+      continue;
+
+    // Calculate actual possible allocations
+    size_t actual_blocks = 0;
+    for (const auto &pair : blocks) {
+      if (pair.second.is_free) {
+        actual_blocks += pair.second.size / block_size;
+      }
     }
 
-    // Mark block as free
-    it->second.is_free = true;
-    allocated_size -= it->second.size;
+    // Weight larger blocks more heavily
+    size_t weight = 1;
+    weighted_sum +=
+        weight * (static_cast<double>(actual_blocks) / potential_blocks);
+    total_weight += weight;
+  }
+  std::cout << "ELAST:" << std::prev(blocks.end())->first << std::endl;
 
-    // Merge with next block if it's free
-    auto next = std::next(it);
-    if (next != blocks.end() && next->second.is_free) {
-        it->second.size += next->second.size;
-        blocks.erase(next);
+  return total_weight > 0 ? 1.0 - (weighted_sum / total_weight) : 0.0;
+}
+
+double MemoryAllocator::get_trimmed_external_fragmentation() const {
+  if (blocks.empty() || allocated_size == 0)
+    return 0.0;
+
+  size_t last_addr = find_last_allocated_address();
+  double weighted_sum = 0.0;
+  size_t total_weight = 0;
+  size_t total_free = 0;
+
+  // Calculate total free space up to last_addr
+  for (const auto &pair : blocks) {
+    if (pair.first >= last_addr) {
+      std::cout << "TLAST:" << pair.first << std::endl;
+      break;
+    }
+    if (pair.second.is_free) {
+      total_free += pair.second.size;
+    }
+  }
+
+  if (total_free == 0)
+    return 0.0;
+
+  // For each possible block size
+  for (size_t block_size = MIN_BLOCK_SIZE; block_size <= total_free;
+       block_size <<= 1) {
+    size_t potential_blocks = total_free / block_size;
+    if (potential_blocks == 0)
+      continue;
+
+    size_t actual_blocks = 0;
+    for (const auto &pair : blocks) {
+      if (pair.first >= last_addr)
+        break;
+      if (pair.second.is_free) {
+        actual_blocks += pair.second.size / block_size;
+      }
     }
 
-    // Merge with previous block if it's free
-    if (it != blocks.begin()) {
-        auto prev = std::prev(it);
-        if (prev->second.is_free) {
-            prev->second.size += it->second.size;
-            blocks.erase(it);
-        }
-    }
-} 
+    size_t weight = 1;
+    weighted_sum +=
+        weight * (static_cast<double>(actual_blocks) / potential_blocks);
+    total_weight += weight;
+  }
+
+  return total_weight > 0 ? 1.0 - (weighted_sum / total_weight) : 0.0;
+}
