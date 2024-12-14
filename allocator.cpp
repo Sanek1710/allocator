@@ -6,7 +6,7 @@
 #include <stdexcept>
 
 MemoryAllocator::MemoryAllocator(size_t size)
-    : total_size(next_power_2(size)), allocated_size(0), next_address(1000) {
+    : total_size(next_power_2(size)), allocated_size(0), next_address(0) {
   blocks[next_address] = {total_size, 0, true};
 }
 
@@ -188,4 +188,51 @@ MemoryAllocator::calculate_external_fragmentation(size_t max_address) const {
 #endif
 
   return total_weight > 0 ? 1.0 - (weighted_sum / total_weight) : 0.0;
+}
+
+size_t MemoryAllocator::align_alloc(size_t size) {
+  if (!size)
+    return 0;
+
+  size_t block_size = calculate_block_size(size);
+
+  // Find and split in one pass
+  for (auto &pair : blocks) {
+    auto addr = pair.first;
+    auto &block = pair.second;
+
+    // Skip if block is not free or too small
+    if (!block.is_free || block.size < block_size)
+      continue;
+
+    // Calculate next grid position within this block
+    size_t grid_pos = ((addr + block_size - 1) / block_size) * block_size;
+    size_t offset = grid_pos - addr;
+
+    // Check if we can fit block at grid position
+    if (offset + block_size <= block.size) {
+      // Split until we reach grid position
+      while (offset > 0) {
+        size_t new_size = block.size >> 1;
+        blocks[addr + new_size] = {new_size, 0, true};
+        block.size = new_size;
+        addr += new_size;
+        offset -= new_size;
+      }
+
+      // Split down to required size if needed
+      while (block.size > block_size && block.size > MIN_BLOCK_SIZE) {
+        size_t new_size = block.size >> 1;
+        blocks[addr + new_size] = {new_size, 0, true};
+        block.size = new_size;
+      }
+
+      block.is_free = false;
+      block.allocated = size;
+      allocated_size += size;
+      return addr;
+    }
+  }
+
+  throw std::bad_alloc();
 }

@@ -12,6 +12,7 @@ public:
 
   explicit MemoryAllocator(size_t size);
   size_t alloc(size_t size);
+  size_t align_alloc(size_t size);  // Allocates block aligned to power of 2
   void dealloc(size_t address);
 
   // Memory statistics - all const for use in production
