@@ -1,7 +1,9 @@
 #include "allocator.hpp"
+#include <array>
 #include <iostream>
 #include <ostream>
 #include <stdexcept>
+
 
 MemoryAllocator::MemoryAllocator(size_t size)
     : total_size(next_power_2(size)), allocated_size(0), next_address(1000) {
@@ -106,7 +108,8 @@ double MemoryAllocator::get_internal_fragmentation() const {
   return static_cast<double>(total_wasted) / allocated_size;
 }
 
-double MemoryAllocator::get_external_fragmentation() const {
+double
+MemoryAllocator::calculate_external_fragmentation(size_t max_address) const {
   if (blocks.empty() || allocated_size == 0)
     return 0.0;
 
@@ -114,58 +117,10 @@ double MemoryAllocator::get_external_fragmentation() const {
   size_t total_weight = 0;
   size_t total_free = 0;
 
-  // First calculate total free space
+  // Calculate total free space
   for (const auto &pair : blocks) {
-    if (pair.second.is_free) {
-      total_free += pair.second.size;
-    }
-  }
-
-  if (total_free == 0)
-    return 0.0;
-
-  // For each possible block size
-  for (size_t block_size = MIN_BLOCK_SIZE; block_size <= total_free;
-       block_size <<= 1) {
-    // Calculate potential blocks (if memory was contiguous)
-    size_t potential_blocks = total_free / block_size;
-    if (potential_blocks == 0)
-      continue;
-
-    // Calculate actual possible allocations
-    size_t actual_blocks = 0;
-    for (const auto &pair : blocks) {
-      if (pair.second.is_free) {
-        actual_blocks += pair.second.size / block_size;
-      }
-    }
-
-    // Weight larger blocks more heavily
-    size_t weight = 1;
-    weighted_sum +=
-        weight * (static_cast<double>(actual_blocks) / potential_blocks);
-    total_weight += weight;
-  }
-  std::cout << "ELAST:" << std::prev(blocks.end())->first << std::endl;
-
-  return total_weight > 0 ? 1.0 - (weighted_sum / total_weight) : 0.0;
-}
-
-double MemoryAllocator::get_trimmed_external_fragmentation() const {
-  if (blocks.empty() || allocated_size == 0)
-    return 0.0;
-
-  size_t last_addr = find_last_allocated_address();
-  double weighted_sum = 0.0;
-  size_t total_weight = 0;
-  size_t total_free = 0;
-
-  // Calculate total free space up to last_addr
-  for (const auto &pair : blocks) {
-    if (pair.first >= last_addr) {
-      std::cout << "TLAST:" << pair.first << std::endl;
+    if (max_address && pair.first >= max_address)
       break;
-    }
     if (pair.second.is_free) {
       total_free += pair.second.size;
     }
@@ -174,25 +129,40 @@ double MemoryAllocator::get_trimmed_external_fragmentation() const {
   if (total_free == 0)
     return 0.0;
 
-  // For each possible block size
-  for (size_t block_size = MIN_BLOCK_SIZE; block_size <= total_free;
-       block_size <<= 1) {
+  // Initialize array for block counts
+  std::array<size_t, BLOCK_SIZES_COUNT> actual_blocks{};
+
+  // Count blocks of each size
+  for (const auto &pair : blocks) {
+    if (max_address && pair.first >= max_address)
+      break;
+    if (pair.second.is_free) {
+      size_t block_size = pair.second.size;
+      size_t index = get_block_size_index(block_size);
+      actual_blocks[index] += 1;
+    }
+  }
+
+  // Calculate fragmentation for each block size
+  for (size_t i = 0; i < BLOCK_SIZES_COUNT; ++i) {
+    size_t block_size = MIN_BLOCK_SIZE << i;
+    if (block_size > total_free)
+      break;
+
     size_t potential_blocks = total_free / block_size;
     if (potential_blocks == 0)
       continue;
 
-    size_t actual_blocks = 0;
-    for (const auto &pair : blocks) {
-      if (pair.first >= last_addr)
-        break;
-      if (pair.second.is_free) {
-        actual_blocks += pair.second.size / block_size;
+    // Calculate actual blocks that could be allocated
+    size_t actual = 0;
+    for (size_t j = i; j < BLOCK_SIZES_COUNT; ++j) {
+      if (actual_blocks[j] > 0) {
+        actual += actual_blocks[j] * (MIN_BLOCK_SIZE << j) / block_size;
       }
     }
 
     size_t weight = 1;
-    weighted_sum +=
-        weight * (static_cast<double>(actual_blocks) / potential_blocks);
+    weighted_sum += weight * (static_cast<double>(actual) / potential_blocks);
     total_weight += weight;
   }
 
