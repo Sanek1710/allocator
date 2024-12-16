@@ -489,5 +489,3 @@ size_t TLSFAllocator::align_alloc(size_t size) {
 
     return reinterpret_cast<char*>(block) - reinterpret_cast<char*>(first_block);
 }
-
-// ... [to be continued with fragmentation calculations] ... 

@@ -1,9 +1,11 @@
 #include "allocator.hpp"
+#include "memory_visualization.hpp"
 #include <array>
 #include <iomanip>
 #include <iostream>
 #include <ostream>
 #include <stdexcept>
+#include <vector>
 
 MemoryAllocator::MemoryAllocator(size_t size)
     : total_size(next_power_2(size)), allocated_size(0), next_address(0) {

@@ -1,4 +1,5 @@
 #include "allocator.hpp"
+#include "memory_visualization.hpp"
 #include "tlsf_allocator.hpp"
 #include <chrono>
 #include <cstddef>
@@ -11,8 +12,7 @@
 
 using Clock = std::chrono::high_resolution_clock;
 
-template<typename Allocator>
-void print_mem_state(const Allocator &alloc) {
+template <typename Allocator> void print_mem_state(const Allocator &alloc) {
   std::cout << "Memory State:\n"
             << "  Memory                 : " << alloc.get_allocated_space()
             << " / " << alloc.get_total_space() << " ("
@@ -27,7 +27,7 @@ void print_mem_state(const Allocator &alloc) {
             << alloc.get_trimmed_external_fragmentation() << "\n\n";
 }
 
-template<typename Allocator>
+template <typename Allocator>
 void stress_test(Allocator &alloc, size_t operations) {
   std::vector<size_t> addresses;
   addresses.reserve(operations / 2); // Reserve to avoid reallocation
@@ -68,6 +68,7 @@ void stress_test(Allocator &alloc, size_t operations) {
     if (i % (operations / 10) == 0) {
       std::cout << "Progress: " << (i * 100 / operations) << "%\n";
       print_mem_state(alloc);
+      track_memory_state(alloc);
     }
   }
 
@@ -83,9 +84,10 @@ void stress_test(Allocator &alloc, size_t operations) {
             << "Ops/sec: " << (operations * 1000.0 / duration.count())
             << "\n\n";
   print_mem_state(alloc);
+  track_memory_state(alloc); // Track final state
 }
 
-template<typename Allocator>
+template <typename Allocator>
 void stress_test_align(Allocator &alloc, size_t operations) {
   std::vector<size_t> addresses;
   addresses.reserve(operations / 2); // Reserve to avoid reallocation
@@ -126,6 +128,7 @@ void stress_test_align(Allocator &alloc, size_t operations) {
     if (i % (operations / 10) == 0) {
       std::cout << "Progress: " << (i * 100 / operations) << "%\n";
       print_mem_state(alloc);
+      track_memory_state(alloc);
     }
   }
 
@@ -141,12 +144,15 @@ void stress_test_align(Allocator &alloc, size_t operations) {
             << "Ops/sec: " << (operations * 1000.0 / duration.count())
             << "\n\n";
   print_mem_state(alloc);
+  track_memory_state(alloc); // Track final state
 }
 
 int test1() {
   try {
+    clear_memory_history();
     MemoryAllocator allocator(1024 * 1024); // 1MB
     stress_test(allocator, 100000);
+    save_memory_history("buddy_state.bmp");
   } catch (const std::exception &e) {
     std::cerr << "Error: " << e.what() << std::endl;
     return 1;
@@ -156,8 +162,10 @@ int test1() {
 
 int test2() {
   try {
+    clear_memory_history();
     MemoryAllocator allocator(1024 * 1024); // 1MB
     stress_test_align(allocator, 100000);
+    save_memory_history("buddy_state_aligned.bmp");
   } catch (const std::exception &e) {
     std::cerr << "Error: " << e.what() << std::endl;
     return 1;
@@ -167,8 +175,10 @@ int test2() {
 
 int test3() {
   try {
+    clear_memory_history();
     TLSFAllocator allocator(1024 * 1024); // 1MB
     stress_test(allocator, 100000);
+    save_memory_history("tlsf_state.bmp");
   } catch (const std::exception &e) {
     std::cerr << "Error: " << e.what() << std::endl;
     return 1;
@@ -178,8 +188,10 @@ int test3() {
 
 int test4() {
   try {
+    clear_memory_history();
     TLSFAllocator allocator(1024 * 1024); // 1MB
     stress_test_align(allocator, 100000);
+    save_memory_history("tlsf_state_aligned.bmp");
   } catch (const std::exception &e) {
     std::cerr << "Error: " << e.what() << std::endl;
     return 1;
@@ -187,32 +199,126 @@ int test4() {
   return 0;
 }
 
-int main() {
+int main0() {
   std::cout << "\nRunning Buddy Allocator Tests:\n";
   test1();
   test2();
-  
+
   std::cout << "\nRunning TLSF Allocator Tests:\n";
   test3();
   test4();
   return 0;
 }
 
-
-int main1(int argc, char *argv[]) {
-
-  MemoryAllocator allocator(2048); // 1MB
+int main() {
+  MemoryAllocator allocator(2048); // 2KB
 
   std::vector<size_t> addrs;
-  while (allocator.get_free_space() > 1024) {
-    size_t addr = allocator.alloc(MemoryAllocator::MIN_BLOCK_SIZE);
+  clear_memory_history();
+  
+  std::mt19937_64 rng(std::chrono::steady_clock::now().time_since_epoch().count());  // Fixed seed for reproducibility
+  std::uniform_int_distribution<size_t> size_dist(4, 64);  // Random sizes between 4 and 64 bytes
+  std::uniform_int_distribution<size_t> op_dist(0, 99);    // For deciding alloc/dealloc
+
+  // Perform 100 random operations
+  for (int i = 0; i < 100; i++) {
+    try {
+      if (addrs.empty() || op_dist(rng) < 70) {  // 70% chance to allocate
+        size_t size = size_dist(rng);
+        size_t addr = allocator.alloc(size);
+        addrs.push_back(addr);
+      } else {  // 30% chance to deallocate
+        size_t idx = std::uniform_int_distribution<size_t>(0, addrs.size() - 1)(rng);
+        allocator.dealloc(addrs[idx]);
+        addrs[idx] = addrs.back();
+        addrs.pop_back();
+      }
+      track_memory_state(allocator);
+    } catch (const std::bad_alloc&) {
+      // If allocation fails, force some deallocations
+      while (!addrs.empty() && op_dist(rng) < 50) {
+        size_t idx = std::uniform_int_distribution<size_t>(0, addrs.size() - 1)(rng);
+        allocator.dealloc(addrs[idx]);
+        addrs[idx] = addrs.back();
+        addrs.pop_back();
+        track_memory_state(allocator);
+      }
+    }
+  }
+
+  print_mem_state(allocator);
+  save_memory_history("buddy_random.bmp");
+  return 0;
+}
+
+int main3() {
+  MemoryAllocator allocator(2048); // 2KB
+
+  std::vector<size_t> addrs;
+  clear_memory_history();
+  
+  std::mt19937_64 rng(42);  // Fixed seed for reproducibility
+  std::uniform_int_distribution<size_t> size_dist(4, 64);  // Random sizes between 4 and 64 bytes
+  std::uniform_int_distribution<size_t> op_dist(0, 99);    // For deciding alloc/dealloc
+
+  // Perform 100 random operations
+  for (int i = 0; i < 100; i++) {
+    try {
+      if (addrs.empty() || op_dist(rng) < 70) {  // 70% chance to allocate
+        size_t size = size_dist(rng);
+        size_t addr = allocator.alloc(size);
+        addrs.push_back(addr);
+      } else {  // 30% chance to deallocate
+        size_t idx = std::uniform_int_distribution<size_t>(0, addrs.size() - 1)(rng);
+        allocator.dealloc(addrs[idx]);
+        addrs[idx] = addrs.back();
+        addrs.pop_back();
+      }
+      track_memory_state(allocator);
+    } catch (const std::bad_alloc&) {
+      // If allocation fails, force some deallocations
+      while (!addrs.empty() && op_dist(rng) < 50) {
+        size_t idx = std::uniform_int_distribution<size_t>(0, addrs.size() - 1)(rng);
+        allocator.dealloc(addrs[idx]);
+        addrs[idx] = addrs.back();
+        addrs.pop_back();
+        track_memory_state(allocator);
+      }
+    }
+  }
+
+  print_mem_state(allocator);
+  save_memory_history("buddy_random.bmp");
+  return 0;
+}
+
+int main2(int argc, char *argv[]) {
+  MemoryAllocator allocator(2048); // 1KB
+
+  std::vector<size_t> addrs;
+  clear_memory_history();
+  int flip = 0;
+  while (addrs.size() < 64) {
+    size_t addr = allocator.alloc(flip ? 4 : 12);
     addrs.push_back(addr);
+    track_memory_state(allocator);
+    flip = !flip;
   }
 
   for (size_t i = 0; i < addrs.size(); ++ ++i) {
     allocator.dealloc(addrs[i]);
+    track_memory_state(allocator);
   }
+  allocator.alloc(31);
+  allocator.alloc(40);
+  allocator.alloc(48);
+  allocator.alloc(56);
+  allocator.alloc(17);
+  track_memory_state(allocator);
+
   print_mem_state(allocator);
+  save_memory_history("buddy_state.bmp");
 
   return 0;
 }
+

@@ -1,6 +1,7 @@
 #pragma once
 #include <cstddef>
 #include <vector>
+#include <string>
 
 class TLSFAllocator {
 public:
@@ -61,4 +62,6 @@ private:
     std::vector<std::vector<Block*>> segregated_lists;
     std::vector<size_t> fl_bitmap;
     std::vector<size_t> sl_bitmap;
+
+    friend class MemoryStateTracker;
 }; 

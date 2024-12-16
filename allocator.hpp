@@ -1,6 +1,7 @@
 #pragma once
 #include <cstddef>
 #include <map>
+#include <string>
 
 class MemoryAllocator {
 
@@ -67,4 +68,6 @@ private:
 
   // Common external fragmentation calculation
   double calculate_external_fragmentation(size_t max_address = 0) const;
+
+  friend class MemoryStateTracker;
 };
